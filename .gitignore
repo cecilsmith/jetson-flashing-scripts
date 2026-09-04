@@ -1,0 +1,36 @@
+# Build artifacts from flash-jetson.sh
+#
+# The work directory defaults to ~/jetson-flash, so normally nothing below
+# lands in the repo. These rules matter when you point the script at the repo
+# with `-w .` or $JETSON_FLASH_WORKDIR.
+
+# Downloaded BSP and sample rootfs tarballs (~2.4 GB per release)
+downloads/
+*.tbz2
+*.tbz2.part
+
+# Extracted / prepared BSP trees
+jetpack-*-l4t-*/
+Linux_for_Tegra/
+.jetson-flash-prepared
+
+# Flash logs — ours, and NVIDIA's own
+logs/
+initrdlog/
+*.log
+
+# Staged flash images produced by l4t_initrd_flash.sh
+images/
+mfi_*/
+bootloader/
+tools/kernel_flash/images/
+
+# A whole work directory created inside the repo
+jetson-flash/
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

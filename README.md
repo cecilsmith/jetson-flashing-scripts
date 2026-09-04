@@ -69,6 +69,60 @@ visible in recovery mode, and whether NVIDIA's download server is reachable.
 
 prints the supported version/board matrix. `--help` documents every flag.
 
+## Force Recovery Mode
+
+The board has to be in Force Recovery Mode before it can be flashed. Nothing on the
+host can do this for you — it is a hardware state.
+
+### Orin Nano / Orin NX developer kit
+
+The **button header** is the 12-pin header on the carrier board, near the front edge
+underneath the module. **Pin 9 is `FC_REC`, pin 10 is `GND`.**
+
+If the board is powered off:
+
+1. Disconnect the DC power plug.
+2. Place a jumper across pins **9 and 10** of the button header.
+3. Reconnect power. The kit powers on automatically, straight into recovery mode.
+
+If the board already boots into Linux, this is much easier — no jumper needed:
+
+```bash
+sudo reboot --force forced-recovery
+```
+
+If it is powered on but you cannot log in, jumper pins 9–10, then briefly short pins
+**7 and 8** to reset it.
+
+Connect the host to the devkit's **USB-C** port.
+
+### AGX Orin developer kit
+
+1. Power the kit off.
+2. Press and hold the **Force Recovery** button.
+3. Press and release the **Power** button.
+4. Release the Force Recovery button.
+
+Connect the host to the USB-C port next to the 40-pin header.
+
+### Confirming it worked
+
+```bash
+lsusb | grep 0955
+```
+
+You want an `ID 0955:<nnnn>` entry — `7523` is Orin Nano 8GB, `7623` Orin Nano 4GB,
+`7323`/`7423` Orin NX 16GB/8GB, `7023`/`7223` AGX Orin. `./flash-jetson.sh --check`
+does this for you and names the module it finds.
+
+> **Remove the jumper once the host has detected the board.** If you leave it in, the
+> Jetson re-enters recovery mode when it reboots after flashing, instead of booting
+> the system you just installed. This is the single most common "it flashed fine but
+> won't boot" report.
+
+Use a known-good USB-C **data** cable, straight into the host — not through a hub, and
+not a charge-only cable.
+
 ## Release matrix
 
 Board configs and download URLs were each verified against NVIDIA's servers rather

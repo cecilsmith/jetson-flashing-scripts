@@ -659,9 +659,18 @@ recovery_help() {
   To put the board into Force Recovery Mode:
 
     Jetson Orin Nano / Orin NX developer kit
-      1. Disconnect the power cable.
-      2. Short the REC and GND pins on the 12-pin button header with a jumper.
-      3. Reconnect power. (Leave the jumper on until flashing starts.)
+      The button header is the 12-pin header on the carrier board, near the
+      front edge under the module. Pin 9 is FC_REC, pin 10 is GND.
+
+      If the board is off:
+        1. Disconnect the DC power plug.
+        2. Jumper pins 9 and 10 together.
+        3. Reconnect power — it powers on straight into recovery mode.
+
+      If the board is already running Linux, this is easier:
+        sudo reboot --force forced-recovery
+
+      Connect the host to the devkit's USB-C port.
 
     Jetson AGX Orin developer kit
       1. Power the kit off.
@@ -671,6 +680,10 @@ recovery_help() {
       Connect the host to the USB-C port next to the 40-pin header.
 
   Confirm with `lsusb` — you should see a device with ID 0955:xxxx (NVidia Corp).
+
+  Remove the jumper once the host has detected the board. If you leave it on,
+  the board re-enters recovery mode when it reboots after flashing instead of
+  booting the system you just installed.
 __RECOVERY__
 }
 
