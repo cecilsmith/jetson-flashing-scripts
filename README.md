@@ -9,6 +9,8 @@ correct flash command for your board, JetPack version and target media.
 
 It is interactive by default and fully scriptable via flags.
 
+> Note: This installation script is only valid for the standard Nvidia carrier board.
+
 ```bash
 git clone https://github.com/cecilsmith/jetson-flashing-scripts.git
 cd jetson-flashing-scripts
