@@ -254,6 +254,8 @@ Devices and board configs
                              jetson-orin-nano-devkit-super       (--super)
                              jetson-orin-nano-devkit-super-maxn  (--super-maxn)
   --device agx            -> jetson-agx-orin-devkit
+                             jetson-agx-orin-devkit-super        (--super)
+                             jetson-agx-orin-devkit-super-maxn   (--super-maxn)
   --device agx-industrial -> jetson-agx-orin-devkit-industrial
 
 Storage targets
@@ -265,12 +267,22 @@ Storage targets
 
 SUPER mode
 ----------
-  Orin Nano and Orin NX expose the uncapped MAXN_SUPER power mode only when
-  the board was flashed with a SUPER config. After first boot:
-    Orin Nano 8GB : sudo nvpmodel -m 2     (MAXN_SUPER; default is 25W, mode 1)
-    Orin Nano 4GB : sudo nvpmodel -m 2     (MAXN_SUPER; default is 25W, mode 1)
-    Orin NX 8/16GB: sudo nvpmodel -m 0     (MAXN_SUPER; default is 40W, mode 4)
+  A board exposes the uncapped power mode only if it was flashed with a SUPER
+  config; it cannot be enabled later without reflashing.
+    Orin Nano / Orin NX : SUPER configs from Jetson Linux 36.4.3 (JetPack 6.2)
+    AGX Orin            : SUPER configs from Jetson Linux 39.2   (JetPack 7.2)
+  After first boot:
+    Orin Nano 4/8GB : sudo nvpmodel -m 2   (MAXN_SUPER; default is 25W, mode 1)
+    Orin NX 8/16GB  : sudo nvpmodel -m 0   (MAXN_SUPER; default is 40W, mode 4)
+    AGX Orin        : sudo nvpmodel -m 0   (MAXN)
   Verify with `sudo nvpmodel -q`; a reboot may be required.
+
+--erase-all defaults (matching each release's documented command)
+-----------------------------------------------------------------
+  Jetson Linux 36.4.x : off everywhere
+  Jetson Linux 36.5.x : on for Orin Nano/NX, off for AGX Orin
+  Jetson Linux 39.2.x : on everywhere
+  Override either way with --erase-all / --no-erase-all.
 MATRIX
 }
 
@@ -300,11 +312,11 @@ What to flash:
       --external-device <d> Override the storage node. Defaults to nvme0n1p1,
                             sda1 or mmcblk0p1 depending on --storage.
 
-SUPER mode, for Orin Nano / Orin NX on JetPack 6.2 and newer:
-      --super               Flash jetson-orin-nano-devkit-super, unlocking the
-                            25W and MAXN_SUPER power modes.
-      --super-maxn          Flash jetson-orin-nano-devkit-super-maxn, which
-                            additionally raises EMC/scf/hub clock ceilings.
+SUPER mode (Orin Nano / Orin NX from JetPack 6.2; AGX Orin from JetPack 7.2):
+      --super               Flash the -super board config, unlocking the higher
+                            power modes (25W and MAXN_SUPER on Orin Nano/NX).
+      --super-maxn          Flash the -super-maxn config, which additionally
+                            raises EMC/scf/hub clock ceilings.
       --no-super            Force the plain non-SUPER config.
 
 Partitioning and rootfs:
@@ -315,7 +327,10 @@ Partitioning and rootfs:
                             NVIDIA's documented value for your combination.
   -S, --rootfs-size <size>  APP partition size, e.g. 60GiB. Default: BSP default.
       --erase-all           Erase the whole target disk before flashing.
-      --no-erase-all        Do not erase. This is the JetPack 6 default.
+      --no-erase-all        Do not erase.
+                            The default follows each release's documented
+                            command: off on L4T 36.4.x, on for Orin Nano/NX
+                            from 36.5, on everywhere from 39.2. See --list.
 
 Pre-seeding first boot, which skips the on-device oem-config wizard:
   -u, --user <name>         Create this user account in the image.
@@ -549,12 +564,20 @@ require_sudo() {
 # covers hosts where that script is incomplete.
 # ---------------------------------------------------------------------------
 readonly DEPS_FETCH="curl wget tar lbzip2 ca-certificates usbutils"
-readonly DEPS_L4T="abootimg binutils bzip2 cpio device-tree-compiler dosfstools \
-libxml2-utils lz4 nfs-kernel-server openssl python3 python3-yaml qemu-user-static \
-rsync sshpass udev uuid-runtime whois xxd zstd bc"
+# Mirrors the package_list in NVIDIA's own tools/l4t_flash_prerequisites.sh
+# (checked against r36.5.2 and r39.2.0), plus what this script needs itself.
+# xmlstarlet matters: l4t_initrd_flash.sh on r39 aborts with exit 1 without it.
+readonly DEPS_L4T="abootimg binfmt-support binutils bzip2 cpio cpp \
+device-tree-compiler dosfstools e2fsprogs file gdisk iproute2 iputils-ping \
+libxml2-utils lz4 netcat-openbsd nfs-kernel-server openssl parted python3 \
+python3-usb python3-yaml qemu-user-static rsync sshpass udev uuid-runtime whois \
+xmlstarlet xxd zlib1g zstd bc"
 
 pkg_installed() {
-    dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null | grep -q '^installed$'
+    # The trailing newline matters: a multi-arch package (zlib1g:amd64 and
+    # zlib1g:i386, say) prints one status per instance, and without it they
+    # run together as "installedinstalled" and never match.
+    dpkg-query -W -f='${db:Status-Status}\n' "$1" 2>/dev/null | grep -q '^installed$'
 }
 
 install_deps() {
@@ -592,10 +615,13 @@ install_deps() {
     run $SUDO apt-get update -qq || warn "apt-get update failed; using the existing package lists"
     # One batch first; if any single package is unavailable on this release,
     # retry individually so one bad name does not block the rest.
-    if ! run env DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y $missing; then
+    # 'env VAR=x sudo cmd' does not work: sudo's default env_reset drops VAR
+    # before cmd sees it, so a debconf prompt could stall an unattended run.
+    # The env has to be set on the far side of sudo.
+    if ! run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing; then
         warn "batch install failed; retrying package by package"
         for p in $missing; do
-            run env DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y "$p" \
+            run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "$p" \
                 || warn "could not install '$p' — continuing"
         done
     fi
@@ -646,6 +672,43 @@ recovery_help() {
 
   Confirm with `lsusb` — you should see a device with ID 0955:xxxx (NVidia Corp).
 __RECOVERY__
+}
+
+# ---------------------------------------------------------------------------
+# UFW / NFS
+#
+# The initrd flasher serves the root filesystem to the board over NFS, so it
+# refuses to start when ufw is active without a rule for port 2049:
+#   "NFS port is blocked by UFW. Please allow NFS port in UFW."  -> exit 1
+# This mirrors check_ufw_nfs_port_open() in NVIDIA's
+# tools/kernel_flash/l4t_network_flash.func. Returns 0 when NFS is blocked.
+# ---------------------------------------------------------------------------
+nfs_firewall_blocked() {
+    command -v ufw >/dev/null 2>&1 || return 1
+
+    local sudo_cmd="$SUDO" status
+    if [ "$(id -u)" -ne 0 ] && [ -z "$sudo_cmd" ]; then
+        sudo_cmd="sudo -n"
+    fi
+    status="$($sudo_cmd ufw status verbose 2>/dev/null || true)"
+
+    # No readable status (no cached sudo, most likely) — do not guess.
+    [ -n "$status" ] || return 1
+    printf '%s\n' "$status" | grep -q 'Status: active' || return 1
+    printf '%s\n' "$status" | grep -qE '^2049[[:space:]]+ALLOW[[:space:]]' && return 1
+    return 0
+}
+
+nfs_firewall_help() {
+    cat <<'__UFW__'
+  ufw is active and does not allow NFS. NVIDIA's flasher exports the root
+  filesystem over NFS and will abort before it touches the board. Allow it:
+
+      sudo ufw allow nfs
+      sudo ufw status verbose
+
+  A connected VPN can break the same NFS export; disconnect it before flashing.
+__UFW__
 }
 
 # ---------------------------------------------------------------------------
@@ -756,6 +819,13 @@ download_file() {
     if [ "$want" -gt 0 ] && [ "$have" = "$want" ]; then
         ok "$label already downloaded ($(human_size "$have"))"
         return 0
+    fi
+    # A local file at least as big as the remote one cannot be resumed: curl
+    # would ask for a range past the end and take the 416 as a hard failure.
+    if [ "$want" -gt 0 ] && [ "$have" -gt "$want" ]; then
+        warn "$dest is larger than the file on the server; re-downloading"
+        run rm -f "$dest"
+        have=0
     fi
     if [ "$have" -gt 0 ]; then
         log "resuming $label at $(human_size "$have") of $(human_size "$want")"
@@ -941,42 +1011,68 @@ $(recovery_help)"
     DEVICE="$pick"
 }
 
-choose_super() {
-    # Only Orin Nano / Orin NX have SUPER configs.
-    case "$DEVICE" in
-        nano|nx) : ;;
-        *)
-            if [ "$SUPER_MODE" = "on" ] || [ "$SUPER_MODE" = "maxn" ]; then
-                warn "SUPER configs apply to Orin Nano/NX only; ignoring for $DEVICE"
-            fi
-            SUPER_MODE="off"
-            return 0 ;;
+# Which releases ship a *-super config for this device family.
+#   Orin Nano / Orin NX : jetson-orin-nano-devkit-super from 36.4.3 (JetPack 6.2)
+#   AGX Orin            : jetson-agx-orin-devkit-super from 39.2 (JetPack 7.2);
+#                         r36 ships no AGX super config at all.
+# Verified against the .conf files in the r36.5.2 and r39.2.0 driver packages.
+super_min_l4t() {
+    case "$1" in
+        nano|nx) printf '36.4.3' ;;
+        agx)     printf '39.2.0' ;;
+        *)       : ;;   # agx-industrial has -maxn but no -super variant
     esac
+}
+
+choose_super() {
+    local min
+    min="$(super_min_l4t "$DEVICE")"
+
+    if [ -z "$min" ]; then
+        if [ "$SUPER_MODE" = "on" ] || [ "$SUPER_MODE" = "maxn" ]; then
+            warn "no SUPER config exists for $DEVICE in any release; ignoring"
+        fi
+        SUPER_MODE="off"
+        return 0
+    fi
 
     if [ "$SUPER_MODE" = "on" ] || [ "$SUPER_MODE" = "maxn" ]; then
-        l4t_at_least 36.4.3 || die "SUPER configs were introduced in JetPack 6.2 (Jetson Linux 36.4.3).
-     JetPack $JP_VER ships Jetson Linux $L4T_VER, which has no
-     jetson-orin-nano-devkit-super config. Choose JetPack 6.2 or newer, or
-     drop --super."
+        l4t_at_least "$min" || die "no SUPER config for $DEVICE in Jetson Linux $L4T_VER (JetPack $JP_VER).
+     The '$(device_to_board "$DEVICE")-super' config first appears in Jetson
+     Linux $min. Choose a newer JetPack, or drop --super."
         return 0
     fi
     [ -n "$SUPER_MODE" ] && return 0
 
-    if ! l4t_at_least 36.4.3; then
+    if ! l4t_at_least "$min"; then
         SUPER_MODE="off"
         return 0
     fi
     if ! interactive; then
-        SUPER_MODE="on"
-        log "no SUPER preference given; defaulting to the SUPER config"
+        # Orin Nano/NX: SUPER is the config NVIDIA leads with, and MAXN_SUPER
+        # cannot be unlocked later without reflashing, so default it on.
+        # AGX Orin: SUPER only appeared in r39.2 and the r39.2.0 Quick Start
+        # still documents the plain config, so leave it off unless asked.
+        case "$DEVICE" in
+            nano|nx)
+                SUPER_MODE="on"
+                log "no SUPER preference given; defaulting to the SUPER config" ;;
+            *)
+                SUPER_MODE="off"
+                log "no SUPER preference given; defaulting to the standard $DEVICE config" ;;
+        esac
         return 0
     fi
 
-    local pick
-    ask_choice pick "SUPER mode? It raises the power/clock ceiling on Orin Nano and NX." 1 \
-        "on:SUPER — jetson-orin-nano-devkit-super (recommended: adds 25W and MAXN_SUPER)" \
-        "maxn:SUPER MAXN — jetson-orin-nano-devkit-super-maxn (also raises EMC/scf/hub clocks)" \
-        "off:Standard — jetson-orin-nano-devkit (original power profile)"
+    local pick base default=1
+    base="$(device_to_board "$DEVICE")"
+    # AGX SUPER is newer and less documented, so do not preselect it.
+    is_agx_board "$base" && default=3
+
+    ask_choice pick "SUPER mode? It raises the power and clock ceiling on this board." "$default" \
+        "on:SUPER — ${base}-super (adds the higher power modes, incl. MAXN_SUPER)" \
+        "maxn:SUPER MAXN — ${base}-super-maxn (also raises EMC/scf/hub clocks)" \
+        "off:Standard — ${base} (original power profile)"
     SUPER_MODE="$pick"
 }
 
@@ -1108,8 +1204,20 @@ should_erase_all() {
         [ "$ERASE_ALL" = "yes" ]
         return $?
     fi
-    # JetPack 7's documented commands all pass --erase-all; JetPack 6's do not.
-    [ "$L4T_MAJOR" -ge 39 ]
+    # NVIDIA changed this default mid-series, so it is per-release AND per-board.
+    # Taken from the Quick Start command listings:
+    #
+    #   r36.4.0 / r36.4.3 / r36.4.4  no --erase-all anywhere
+    #   r36.5   / r36.5.2            --erase-all on Orin Nano/NX only,
+    #                                not on AGX Orin (internal or external)
+    #   r39.2   / r39.2.1            --erase-all on everything, flash.sh included
+    if [ "$L4T_MAJOR" -ge 39 ]; then
+        return 0
+    fi
+    if l4t_at_least 36.5.0 && ! is_agx_board "$BOARD"; then
+        return 0
+    fi
+    return 1
 }
 
 build_flash_command() {
@@ -1173,10 +1281,12 @@ build_flash_command() {
         # Target selector goes last. Orin Nano/NX flash QSPI (internal) plus an
         # external rootfs; AGX Orin puts the rootfs on a genuinely external disk.
         #
-        # NOTE: the r39.2 Quick Start shows "internal" for the AGX Orin microSD
-        # case while showing "external" for its NVMe and USB cases. That reads
-        # as a copy-paste slip in the doc, so we use "external" consistently for
-        # AGX external media. Override with --extra-flash-args if you disagree.
+        # NOTE: the r39.2 and r39.2.1 Quick Starts show "internal" for the AGX
+        # Orin microSD case while showing "external" for its NVMe and USB
+        # cases; every r36 page shows "external" for all three. That reads as a
+        # copy-paste slip in the newer doc, so we use "external" consistently
+        # for AGX external media. Pass --target internal to follow the doc
+        # literally.
         if [ -n "$TARGET" ]; then
             set -- "$@" "$BOARD" "$TARGET"
         elif is_agx_board "$BOARD"; then
@@ -1283,12 +1393,15 @@ flash_troubleshooting() {
       known-good data cable.
     * ModemManager grabbing the USB device mid-flash:
         sudo systemctl stop ModemManager
+    * ufw blocking the flasher's NFS export ("NFS port is blocked by UFW"):
+        sudo ufw allow nfs
+    * A connected VPN, which can break the same NFS export.
     * Not enough free disk space on the host for the staged images.
     * Target media too small — NVIDIA requires 64GB or larger for USB/microSD
       on Orin Nano and Orin NX.
 
   Detailed logs from NVIDIA's flasher are under:
-    <workdir>/Linux_for_Tegra/tools/kernel_flash/
+    <workdir>/.../Linux_for_Tegra/initrdlog/
 __TROUBLE__
 }
 
@@ -1309,16 +1422,19 @@ __NEXT__
 
     case "$SUPER_MODE" in
         on|maxn)
+            printf '\n  SUPER mode is available on this image. After first boot:\n'
+            printf '      sudo nvpmodel -q                 # show the current mode\n'
+            if is_agx_board "$BOARD"; then
+                printf '      sudo nvpmodel -m 0               # MAXN on AGX Orin\n'
+            else
+                printf '      sudo nvpmodel -m 2               # MAXN_SUPER on Orin Nano 4GB / 8GB\n'
+                printf '      sudo nvpmodel -m 0               # MAXN_SUPER on Orin NX 8GB / 16GB\n'
+            fi
             cat <<'__SUPER__'
-
-  SUPER mode is available on this image. After first boot:
-      sudo nvpmodel -q                 # show the current mode
-      sudo nvpmodel -m 2               # MAXN_SUPER on Orin Nano 4GB / 8GB
-      sudo nvpmodel -m 0               # MAXN_SUPER on Orin NX 8GB / 16GB
       sudo jetson_clocks               # pin clocks to their maximum
-  A reboot may be required for the mode change to take effect. MAXN_SUPER is
-  uncapped, so make sure the board has adequate cooling and a supply that can
-  hold up under the higher draw.
+  A reboot may be required for the mode change to take effect. The uncapped
+  mode is exactly that, so make sure the board has adequate cooling and a
+  supply that holds up under the higher draw.
 __SUPER__
             ;;
     esac
@@ -1400,6 +1516,17 @@ doctor() {
     else
         warn "no Jetson found in recovery mode"
         recovery_help
+    fi
+
+    step "Checking the host firewall"
+    if ! command -v ufw >/dev/null 2>&1; then
+        ok "ufw not installed; nothing blocking the flasher's NFS export"
+    elif nfs_firewall_blocked; then
+        err "ufw is active and NFS (port 2049) is not allowed — flashing will abort"
+        nfs_firewall_help
+        missing=$((missing + 1))
+    else
+        ok "NFS is not blocked by ufw"
     fi
 
     step "Checking network access to NVIDIA"
@@ -1494,6 +1621,19 @@ main() {
 
     preflight_bsp_checks
     build_flash_command
+
+    # The initrd flasher aborts on a ufw-blocked NFS port; catch it here rather
+    # than after the images have been staged. eMMC goes through flash.sh, which
+    # does not use NFS.
+    if [ "$STORAGE" != "emmc" ] && [ "$DRY_RUN" != "yes" ] && nfs_firewall_blocked; then
+        warn "ufw is active and NFS (port 2049) is not allowed."
+        nfs_firewall_help
+        if interactive; then
+            confirm "Continue anyway?" || die "aborted: allow NFS through ufw and re-run"
+        else
+            die "aborted: run 'sudo ufw allow nfs' and try again"
+        fi
+    fi
 
     # Confirm the board really is in recovery mode before we commit.
     if [ "$NO_FLASH" != "yes" ] && [ "$DRY_RUN" != "yes" ]; then
